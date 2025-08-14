@@ -4,6 +4,7 @@
 import { useMemo, useState, useCallback, useRef, useEffect } from "react";
 import NextImage from "next/image";
 import { Inter } from "next/font/google";
+import { useRouter } from "next/navigation";
 const inter = Inter({ subsets: ["latin"], weight: ["400", "600", "700"] });
 
 /* =========================
@@ -20,10 +21,104 @@ type Player = {
   canPlayGK?: boolean;  // outfielder who can cover GK
 };
 
+// --- Reporting storage types ---
+type StoredSessionPlayer = { id: string; name: string };
+type StoredSession = {
+  id: string; // uuid-ish
+  dateISO: string; // YYYY-MM-DD
+  teams: StoredSessionPlayer[][]; // players per team
+};
+
 /* =========================
    Design tokens
 ========================= */
 const HEIGHT = "h-9";
+
+// --- Local storage helpers for sessions ---
+const SESSIONS_KEY = "fofa-sessions";
+function loadSessions(): StoredSession[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = localStorage.getItem(SESSIONS_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed as StoredSession[];
+  } catch {
+    return [];
+  }
+}
+function saveSessions(sessions: StoredSession[]) {
+  try {
+    localStorage.setItem(SESSIONS_KEY, JSON.stringify(sessions));
+  } catch {}
+}
+function recordSession(teams: Player[][]) {
+  if (!teams || !teams.length) return;
+  const today = new Date();
+  const y = today.getFullYear();
+  const m = String(today.getMonth() + 1).padStart(2, "0");
+  const d = String(today.getDate()).padStart(2, "0");
+  const dateISO = `${y}-${m}-${d}`;
+  const sess: StoredSession = {
+    id: `${dateISO}-${Math.random().toString(36).slice(2, 8)}`,
+    dateISO,
+    teams: teams.map(t => t.map(p => ({ id: p.id, name: p.name })))
+  };
+  const prev = loadSessions();
+  prev.push(sess);
+  saveSessions(prev);
+}
+// --- Reports sidebar UI ---
+function ReportList({ sessions, dateFrom, dateTo }: { sessions: StoredSession[]; dateFrom: string; dateTo: string; }) {
+  // Build counts per player name within date range (inclusive)
+  const counts = useMemo(() => {
+    const from = new Date(dateFrom + "T00:00:00").getTime();
+    const to = new Date(dateTo + "T23:59:59").getTime();
+    const map = new Map<string, number>();
+    for (const s of sessions) {
+      const t = new Date(s.dateISO + "T12:00:00").getTime();
+      if (isNaN(t) || t < from || t > to) continue;
+      for (const team of s.teams) {
+        for (const p of team) {
+          map.set(p.name, (map.get(p.name) || 0) + 1);
+        }
+      }
+    }
+    return Array.from(map.entries()).sort((a, b) => b[1] - a[1]);
+  }, [sessions, dateFrom, dateTo]);
+
+  const totalSessionsInRange = useMemo(() => {
+    const from = new Date(dateFrom + "T00:00:00").getTime();
+    const to = new Date(dateTo + "T23:59:59").getTime();
+    return sessions.filter(s => {
+      const t = new Date(s.dateISO + "T12:00:00").getTime();
+      return !isNaN(t) && t >= from && t <= to;
+    }).length;
+  }, [sessions, dateFrom, dateTo]);
+
+  return (
+    <div className="flex-1 overflow-auto">
+      <div className="px-4 py-2 text-sm text-neutral-700 border-b border-black">
+        Sessions in range: <b>{totalSessionsInRange}</b>
+      </div>
+      {counts.length === 0 ? (
+        <div className="p-4 text-sm text-neutral-500">No appearances recorded for this range yet.</div>
+      ) : (
+        <ul className="divide-y divide-black/20">
+          {counts.map(([name, count]) => (
+            <li key={name} className="flex items-center justify-between px-4 py-3">
+              <span className="font-medium text-neutral-900">{name}</span>
+              <span className="inline-flex items-center gap-2">
+                <span className="text-sm text-neutral-700">{count}</span>
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
 
 const card =
   "relative rounded-3xl border border-black bg-white shadow-xl p-5 md:p-6";
@@ -647,6 +742,8 @@ export default function Page() {
   // Shuffle animation state
   const [firstGenerationAnimationDone, setFirstGenerationAnimationDone] = useState(false);
   const [isShuffling, setIsShuffling] = useState(false);
+  const [finalizing, setFinalizing] = useState(false);
+  const [showWhatsApp, setShowWhatsApp] = useState(false);
 
   const [flashId, setFlashId] = useState<string | null>(null);
   const flashTimerRef = useRef<number | null>(null);
@@ -669,6 +766,33 @@ export default function Page() {
     setToast(msg);
     window.clearTimeout((showToast as any)._t);
     (showToast as any)._t = window.setTimeout(() => setToast(null), 3000);
+  }, []);
+
+  // Reports bottom card state
+  const [reportsCardOpen, setReportsCardOpen] = useState(false);
+  const [sessions, setSessions] = useState<StoredSession[]>([]);
+  // Default range: last 60 days to today
+  const todayISO = useMemo(() => {
+    const d = new Date();
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, "0");
+    const day = String(d.getDate()).padStart(2, "0");
+    return `${y}-${m}-${day}`;
+  }, []);
+  const sixtyDaysAgoISO = useMemo(() => {
+    const d = new Date();
+    d.setDate(d.getDate() - 60);
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, "0");
+    const day = String(d.getDate()).padStart(2, "0");
+    return `${y}-${m}-${day}`;
+  }, []);
+  const [dateFrom, setDateFrom] = useState<string>(sixtyDaysAgoISO);
+  const [dateTo, setDateTo] = useState<string>(todayISO);
+
+  // Load sessions on mount and whenever the sidebar opens
+  useEffect(() => {
+    setSessions(loadSessions());
   }, []);
 
 
@@ -878,12 +1002,14 @@ export default function Page() {
       setIsShuffling(false);
       if (!built.length) return;
       setTeams(built);
+      setShowWhatsApp(false);
       setButtonPulse(true);
       setTimeout(() => setButtonPulse(false), 350);
       if (bibIdx === null) setBibIdx(Math.floor(Math.random() * built.length));
       setPlayersConfirmed(true);
       setStep2Open(false);
       setStep3Open(true);
+      setReportsCardOpen(false);
       setFirstGenerationAnimationDone(true);
       setTimeout(() => {
         document.getElementById("step-3")?.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -894,12 +1020,14 @@ export default function Page() {
     const built = buildBalancedTeams(sel, numTeams, playersPerTeam);
     if (!built.length) return;
     setTeams(built);
+    setShowWhatsApp(false);
     setButtonPulse(true);
     setTimeout(() => setButtonPulse(false), 500);
     if (bibIdx === null) setBibIdx(Math.floor(Math.random() * built.length));
     setPlayersConfirmed(true);
     setStep2Open(false);
     setStep3Open(true);
+    setReportsCardOpen(false);
     setTimeout(() => {
       document.getElementById("step-3")?.scrollIntoView({ behavior: "smooth", block: "start" });
     }, 50);
@@ -910,11 +1038,35 @@ export default function Page() {
     setTeams([]);
     setBibIdx(null);
     setPlayersConfirmed(false);
+    setShowWhatsApp(false);
     // Smooth scroll back to Step 2
     setTimeout(() => {
       document.getElementById("step-2")?.scrollIntoView({ behavior: "smooth", block: "start" });
     }, 50);
   }, []);
+
+  const onConfirmAndShare = useCallback(async () => {
+    if (!whatsappMessage) return;
+    // persist this session for reports
+    try { recordSession(teams); } catch {}
+    setSessions(loadSessions());
+    setReportsCardOpen(true);
+    // show quick overlay animation
+    setFinalizing(true);
+    try {
+      // stash for a future dedicated share page if needed
+      sessionStorage.setItem("fofa-share-msg", whatsappMessage);
+    } catch {}
+    // let the animation run, then focus the share box
+    window.setTimeout(() => {
+      setFinalizing(false);
+      setShowWhatsApp(true);
+      const el = document.getElementById("share-box");
+      el?.scrollIntoView({ behavior: "smooth", block: "start" });
+      const ta = document.getElementById("wa-textarea") as HTMLTextAreaElement | null;
+      if (ta) { ta.focus(); ta.select(); }
+    }, 900);
+  }, [whatsappMessage, teams]);
 
   /* UI helpers */
   const SegPill = ({
@@ -1457,7 +1609,7 @@ ${selectedPill ? 'bg-[#326295] border-[#326295] text-white font-semibold' : 'bg-
                   ))}
                 </div>
                 {teams.length > 0 && (
-                  <div className="mt-3 w-full flex items-center gap-2 justify-start">
+                  <div className="mt-3 w-full flex items-center gap-2 justify-start flex-wrap">
                     <button
                       type="button"
                       className={btnGhost}
@@ -1474,43 +1626,129 @@ ${selectedPill ? 'bg-[#326295] border-[#326295] text-white font-semibold' : 'bg-
                     >
                       Regenerate teams
                     </button>
+                    <button
+                      type="button"
+                      className={btnPrimary}
+                      onClick={onConfirmAndShare}
+                      title="Confirm and generate WhatsApp message"
+                    >
+                      Confirm teams & Generate WhatsApp
+                    </button>
                   </div>
                 )}
 
                 {/* WhatsApp */}
-                <div className="mt-5 rounded-xl border border-black bg-white p-4">
-                  <div className="mb-2 text-sm font-medium text-neutral-900">📲 WhatsApp message</div>
-                  <textarea
-                    readOnly
-                    className="w-full rounded-md border border-black bg-white p-3 text-sm text-neutral-900"
-                    rows={8}
-                    value={whatsappMessage}
-                  />
-                  <div className="mt-2 flex items-center gap-2">
-                    <button
-                      className={btnPrimary}
-                      onClick={async () => {
-                        const ok = await copyToClipboard(whatsappMessage);
-                        showToast(ok ? "Copied to clipboard" : "Copy failed. Please copy manually.");
-                      }}
-                    >
-                      Copy to clipboard
-                    </button>
-                    <a
-                      href={`https://wa.me/?text=${encodeURIComponent(whatsappMessage)}`}
-                      target="_blank"
-                      className={`${btnGhost} inline-flex items-center`}
-                    >
-                      Open WhatsApp
-                    </a>
+                {showWhatsApp && (
+                  <div id="share-box" className="mt-5 rounded-xl border border-black bg-white p-4">
+                    <div className="mb-2 text-sm font-medium text-neutral-900">📲 WhatsApp message</div>
+                    <textarea
+                      id="wa-textarea"
+                      readOnly
+                      className="w-full rounded-md border border-black bg-white p-3 text-sm text-neutral-900"
+                      rows={8}
+                      value={whatsappMessage}
+                    />
+                    <div className="mt-2 flex items-center gap-2">
+                      <button
+                        className={btnPrimary}
+                        onClick={async () => {
+                          const ok = await copyToClipboard(whatsappMessage);
+                          showToast(ok ? "Copied to clipboard" : "Copy failed. Please copy manually.");
+                        }}
+                      >
+                        Copy to clipboard
+                      </button>
+                      <a
+                        href={`https://wa.me/?text=${encodeURIComponent(whatsappMessage)}`}
+                        target="_blank"
+                        className={`${btnGhost} inline-flex items-center`}
+                      >
+                        Open WhatsApp
+                      </a>
+                    </div>
                   </div>
-                </div>
+                )}
+
+                {/* Player Reports (bottom card) */}
+                {(sessions.length > 0) && (
+                  <div className="mt-5 rounded-2xl border border-black bg-white shadow-sm">
+                    <div className="flex items-center justify-between px-4 py-3">
+                      <div className="font-semibold">Player reports</div>
+                      <button
+                        type="button"
+                        onClick={() => setReportsCardOpen(v => !v)}
+                        className="rounded-md border border-black bg-white px-2.5 py-1.5 text-sm hover:bg-neutral-50"
+                        aria-expanded={reportsCardOpen}
+                      >
+                        {reportsCardOpen ? "Hide ▲" : "Show ▼"}
+                      </button>
+                    </div>
+                    <Collapse open={reportsCardOpen}>
+                      <div className="px-4 pb-4">
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-3">
+                          <label className="text-sm">
+                            <span className="block text-neutral-700 mb-1">From</span>
+                            <input
+                              type="date"
+                              className={`${input} w-full`}
+                              value={dateFrom}
+                              onChange={(e) => setDateFrom(e.target.value)}
+                            />
+                          </label>
+                          <label className="text-sm">
+                            <span className="block text-neutral-700 mb-1">To</span>
+                            <input
+                              type="date"
+                              className={`${input} w-full`}
+                              value={dateTo}
+                              onChange={(e) => setDateTo(e.target.value)}
+                            />
+                          </label>
+                        </div>
+                        <div className="mb-3 text-[12px] text-neutral-600">
+                          Counting appearances in confirmed teams between the selected dates.
+                        </div>
+                        <div className="rounded-xl border border-neutral-200 overflow-hidden">
+                          <ReportList sessions={sessions} dateFrom={dateFrom} dateTo={dateTo} />
+                        </div>
+                        <div className="mt-3 flex gap-2">
+                          <button
+                            onClick={() => {
+                              localStorage.removeItem("fofa-sessions");
+                              setSessions([]);
+                            }}
+                            className="bg-red-500 text-white px-3 py-2 rounded"
+                          >
+                            Reset reports
+                          </button>
+                          {sessions.length > 0 && (
+                            <button
+                              onClick={() => {
+                                const blob = new Blob([JSON.stringify(sessions, null, 2)], { type: "application/json" });
+                                const url = URL.createObjectURL(blob);
+                                const a = document.createElement("a");
+                                a.href = url;
+                                a.download = "fofa-sessions.json";
+                                a.click();
+                                URL.revokeObjectURL(url);
+                              }}
+                              className="bg-neutral-100 text-neutral-800 px-3 py-2 rounded border"
+                            >
+                              Export JSON
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    </Collapse>
+                  </div>
+                )}
               </>
             </Collapse>
           )}
         </section>
       )}
 
+      {/* Reports Sidebar removed */}
       {/* Reset all */}
       <div className="mt-5">
         <button
@@ -1522,11 +1760,21 @@ ${selectedPill ? 'bg-[#326295] border-[#326295] text-white font-semibold' : 'bg-
             setSetupConfirmed(false);
             setPlayersConfirmed(false);
             setFirstGenerationAnimationDone(false);
+            setShowWhatsApp(false);
           }}
         >
           Reset all
         </button>
       </div>
+      {/* Finalize overlay */}
+      {finalizing && (
+        <div className="fixed inset-0 z-[60] bg-black/40 backdrop-blur-[1px] flex items-center justify-center">
+          <div className="bg-white rounded-xl border border-black px-6 py-5 shadow-xl flex items-center gap-3">
+            <span className="football-anim" aria-hidden>⚽</span>
+            <span className="font-medium text-neutral-900">Preparing WhatsApp message…</span>
+          </div>
+        </div>
+      )}
       {/* Toast */}
       {toast && (
         <div className="fixed bottom-6 left-1/2 z-50 -translate-x-1/2 rounded-md border border-black bg-white/95 px-4 py-2 text-sm font-medium text-neutral-900 shadow-lg">
@@ -1626,6 +1874,12 @@ ${selectedPill ? 'bg-[#326295] border-[#326295] text-white font-semibold' : 'bg-
         .fade-in {
           animation: fadeInUp 0.28s ease-out both;
           animation-delay: var(--d, 0ms);
+        }
+        .football-anim { font-size: 28px; display: inline-block; animation: ballRoll 0.9s ease-in-out; }
+        @keyframes ballRoll {
+          0% { transform: translateX(-10px) rotate(0deg); }
+          50% { transform: translateX(10px) rotate(180deg); }
+          100% { transform: translateX(-10px) rotate(360deg); }
         }
       `}</style>
     </main>
