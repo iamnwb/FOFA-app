@@ -89,7 +89,7 @@ export default function SharePage() {
             Copy to clipboard
           </button>
           <a
-            href={`https://wa.me/?text=${encodeURIComponent(message)}`}
+            href={`https://api.whatsapp.com/send?text=${encodeURIComponent(message)}`}
             target="_blank"
             className={btnGhost}
           >
