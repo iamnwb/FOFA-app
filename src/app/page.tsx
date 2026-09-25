@@ -1659,7 +1659,7 @@ ${selectedPill ? 'bg-[#326295] border-[#326295] text-white font-semibold' : 'bg-
                         Copy to clipboard
                       </button>
                       <a
-                        href={`https://api.whatsapp.com/send?text=${encodeURIComponent(whatsappMessage)}`}
+                        href={`https://api.whatsapp.com/send/?text=${encodeURIComponent(whatsappMessage)}`}
                         target="_blank"
                         className={`${btnGhost} inline-flex items-center`}
                       >
