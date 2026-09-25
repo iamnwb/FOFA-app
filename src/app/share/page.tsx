@@ -1,7 +1,7 @@
 // src/app/share/page.tsx
 "use client";
 
-import { useEffect, useMemo, useState, useCallback } from "react";
+import { Suspense, useEffect, useMemo, useState, useCallback } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 
 const btnPrimary =
@@ -32,7 +32,7 @@ async function copyToClipboard(text: string): Promise<boolean> {
   }
 }
 
-export default function SharePage() {
+function ShareContent() {
   const search = useSearchParams();
   const router = useRouter();
   const [toast, setToast] = useState<string | null>(null);
@@ -107,5 +107,13 @@ export default function SharePage() {
         </div>
       )}
     </main>
+  );
+}
+// useSearchParams() needs a Suspense boundary or `next build` fails on /share
+export default function SharePage() {
+  return (
+    <Suspense fallback={null}>
+      <ShareContent />
+    </Suspense>
   );
 }
